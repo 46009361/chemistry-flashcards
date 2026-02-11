@@ -1,0 +1,10 @@
+[
+    {
+        "q": "Calculate 2.8 \u00d7 10⁻² km + 3.0 \u00d7 10² m to the correct number of significant figures",
+        "a": "3.3 \u00d7 10² m\n\nDue to LARS rules, the higher exponent after \"\u00d7 10\" takes precedence in addition."
+    },
+    {
+        "q": "What are the columns on a periodic table called?",
+        "a": "Groups (or Families)"
+    }
+]

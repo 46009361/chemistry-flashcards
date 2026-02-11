@@ -1,0 +1,61 @@
+@font-face {
+    font-display: swap;
+    font-family: "Ember Condensed";
+    src: url("fonts/AmazonEmberCd_W_Rg.woff2") format("woff2"),
+    url("fonts/AmazonEmberCd_W_Rg.woff") format("woff"),
+    url("fonts/AmazonEmberCd_W_Rg.eot") format("embedded-opentype"),
+    url("fonts/AmazonEmberCdRC_Rg.ttf") format("truetype");
+}
+
+body {
+  font-family: "Ember Condensed", sans-serif;
+  background-color: deeppink;
+  display: grid;
+  place-items: center; /* Centers both horizontally and vertically */
+  height: 100vh;
+  margin: 0;
+}
+
+.flip-card {
+  background-color: transparent;
+  width: 2.5in;
+  height: 3.5in;
+  perspective: 1000px;
+}
+
+.flip-card-inner {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  transition: transform 1s ease-in;
+  transform-style: preserve-3d;
+}
+
+.flip-card:hover .flip-card-inner {
+  transform: rotateX(180deg);
+}
+
+.flip-card-front, .flip-card-back {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  border-color: black;
+  border-width: 0.0125in;
+  border-style: solid;
+  border-radius: 3.5mm;
+  padding: 0.2in;
+  box-sizing: border-box;
+  backface-visibility: hidden;
+}
+
+.flip-card-front {
+  background-color: lightgrey; /* add dark theme */
+  color: deeppink;
+}
+
+.flip-card-back {
+  background-color: lightgrey;
+  color: royalblue;
+  transform: rotateX(180deg);
+}
+
