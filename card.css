@@ -9,7 +9,7 @@
 
 body {
   font-family: "Ember Condensed", sans-serif;
-  background-color: deeppink;
+  background-image: url('space.webp');
   display: grid;
   place-items: center; /* Centers both horizontally and vertically */
   height: 100vh;
