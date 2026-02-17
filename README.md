@@ -1,6 +1,6 @@
 # Chemistry Flashcards
 
-A simple UI for a random flashcard to help me study an eleventh-grade class I take better. Currently, there are only two cards supported, but you are welcome to submit pull requests in `cards.json`.
+A simple UI for a random flashcard to help me study an eleventh-grade class I take better. Currently, there are only two cards supported, but you are welcome to submit pull requests in `cards.json`. To flip a card, hover it, although you may need to click and hold on some devices.
 
 ## Credits
 
