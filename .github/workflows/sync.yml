@@ -1,4 +1,4 @@
-name: Sync to main site
+name: Sync to 46009361.com
 on:
   push:
     branches: [main]
@@ -9,13 +9,14 @@ jobs:
       - uses: actions/checkout@v3
         with:
           fetch-depth: 0
+          path: source
       - uses: actions/checkout@v3
         with:
           repository: 46009361/46009361.com
           path: target
           token: ${{ secrets.GH_TOKEN }}
       - run: |
-          cp -r . target/chemistry-flashcards
+          cp -r source/* target/chemistry-flashcards/
           cd target
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
