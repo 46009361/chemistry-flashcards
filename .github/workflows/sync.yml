@@ -1,4 +1,4 @@
-name: Sync to 46009361.com
+name: Sync to main site
 on:
   push:
     branches: [main]
