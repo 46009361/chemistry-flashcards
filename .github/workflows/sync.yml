@@ -13,7 +13,7 @@ jobs:
         with:
           repository: 46009361/46009361.com
           path: target
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GH_TOKEN }}
       - run: |
           cp -r . target/chemistry-flashcards
           cd target
