@@ -1,4 +1,4 @@
-name: Sync chemistry-flashcards to 46009361.com
+name: Sync to 46009361.com
 
 on:
   push:
@@ -18,24 +18,24 @@ jobs:
 
     env:
       TOKEN: ${{ secrets.GH_TOKEN }}
-      SOURCE_REPO: 46009361/chemistry-flashcards
       TARGET_REPO: 46009361/46009361.com
       TARGET_PREFIX: chemistry-flashcards
-      COMMIT_MSG: ${{ github.event.head_commit.message }}
+      COMMIT_MSG: ${{ github.event.head_commit.message || 'Sync chemistry-flashcards' }}
 
     steps:
-      - name: Check out source repository
+      - name: Checkout source repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: Synchronize files through the GitHub Contents API
+      - name: Sync source files to target repository via GitHub Contents API
         shell: bash
         run: |
           set -euo pipefail
 
           API_ROOT="https://api.github.com"
           TARGET_API="$API_ROOT/repos/$TARGET_REPO"
+
           SOURCE_LIST="$(mktemp)"
           TARGET_TREE="$(mktemp)"
           RESPONSE_FILE="$(mktemp)"
@@ -57,9 +57,22 @@ jobs:
             exit 1
           fi
 
-          if [ -z "${COMMIT_MSG:-}" ]; then
-            COMMIT_MSG="Synchronize chemistry-flashcards"
-          fi
+          encode_path() {
+            local path="$1"
+            local encoded=""
+            local segment=""
+
+            IFS='/' read -r -a segments <<< "$path"
+
+            for segment in "${segments[@]}"; do
+              if [ -n "$encoded" ]; then
+                encoded+="/"
+              fi
+              encoded+="$(printf '%s' "$segment" | jq -sRr @uri)"
+            done
+
+            printf '%s' "$encoded"
+          }
 
           echo "Reading target repository metadata..."
           TARGET_BRANCH="$(
@@ -67,23 +80,21 @@ jobs:
               -H "Authorization: Bearer $TOKEN" \
               -H "Accept: application/vnd.github+json" \
               "$TARGET_API" |
-              jq -er '.default_branch'
+            jq -er '.default_branch'
           )"
 
           echo "Target branch: $TARGET_BRANCH"
 
-          # Build a list of all source files while excluding hidden files and .github.
+          echo "Enumerating source files..."
           find . \
             -type f \
             -not -path './.git/*' \
             -not -path './.github/*' \
             -not -path '*/.*' \
-            -printf '%P\n' |
-            sort > "$SOURCE_LIST"
+            -printf '%P\n' \
+            | sort > "$SOURCE_LIST"
 
-          # Retrieve the target tree once so files deleted from the source can also
-          # be removed from the target repository.
-          echo "Reading target repository tree..."
+          echo "Fetching target repository tree..."
           curl --fail-with-body --silent --show-error \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/vnd.github+json" \
@@ -91,34 +102,27 @@ jobs:
             > "$TARGET_TREE"
 
           if jq -e '.truncated == true' "$TARGET_TREE" >/dev/null; then
-            echo "::error::The target Git tree response was truncated."
+            echo "::error::Target repository tree response was truncated."
             exit 1
           fi
 
-          # Generate one JSON payload per source file. The large base64 content is
-          # read by jq from a file, never passed as a process argument.
           while IFS= read -r FILE; do
             [ -n "$FILE" ] || continue
             [ -f "$FILE" ] || continue
 
-            TARGET_PATH="$TARGET_PREFIX/$FILE"
-            echo "Uploading: $TARGET_PATH"
+            TARGET_PATH="${TARGET_PREFIX}/${FILE}"
+            ENCODED_PATH="$(encode_path "$TARGET_PATH")"
+            CONTENTS_URL="${TARGET_API}/contents/${ENCODED_PATH}"
 
-            # Encode the path for use in the Contents API URL.
-            ENCODED_PATH="$(
-              printf '%s' "$TARGET_PATH" | jq -sRr @uri
-            )"
-            CONTENTS_URL="$TARGET_API/contents/$ENCODED_PATH"
+            echo "Processing: ${TARGET_PATH}"
 
-            # The Contents API accepts base64 content. Keep it on disk to avoid
-            # Linux execve argument-size limits for large binary assets.
             base64 --wrap=0 "$FILE" > "$CONTENT_FILE"
 
             SHA=""
             HTTP_STATUS="$(
               curl --silent --show-error \
-                -o "$RESPONSE_FILE" \
-                -w '%{http_code}' \
+                --output "$RESPONSE_FILE" \
+                --write-out '%{http_code}' \
                 -H "Authorization: Bearer $TOKEN" \
                 -H "Accept: application/vnd.github+json" \
                 "$CONTENTS_URL"
@@ -132,7 +136,7 @@ jobs:
                 SHA=""
                 ;;
               *)
-                echo "::error::Unable to inspect $TARGET_PATH (HTTP $HTTP_STATUS)."
+                echo "::error::Unable to inspect ${TARGET_PATH} (HTTP ${HTTP_STATUS})."
                 cat "$RESPONSE_FILE"
                 exit 1
                 ;;
@@ -146,9 +150,9 @@ jobs:
                 --rawfile content "$CONTENT_FILE" \
                 '{
                   message: $message,
-                  content: $content,
                   sha: $sha,
-                  branch: $branch
+                  branch: $branch,
+                  content: $content
                 }' > "$PAYLOAD_FILE"
             else
               jq -n \
@@ -157,31 +161,38 @@ jobs:
                 --rawfile content "$CONTENT_FILE" \
                 '{
                   message: $message,
-                  content: $content,
-                  branch: $branch
+                  branch: $branch,
+                  content: $content
                 }' > "$PAYLOAD_FILE"
             fi
 
-            curl --fail-with-body --silent --show-error \
-              --request PUT \
-              -H "Authorization: Bearer $TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              -H "Content-Type: application/json" \
-              --data-binary "@$PAYLOAD_FILE" \
-              "$CONTENTS_URL" > "$RESPONSE_FILE"
+            HTTP_STATUS="$(
+              curl --silent --show-error \
+                --output "$RESPONSE_FILE" \
+                --write-out '%{http_code}' \
+                --request PUT \
+                -H "Authorization: Bearer $TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                -H "Content-Type: application/json" \
+                --data-binary "@$PAYLOAD_FILE" \
+                "$CONTENTS_URL"
+            )"
 
-            jq -er '.commit.sha' "$RESPONSE_FILE" >/dev/null || {
-              echo "::error::GitHub rejected the upload for $TARGET_PATH."
-              cat "$RESPONSE_FILE"
-              exit 1
-            }
+            case "$HTTP_STATUS" in
+              200|201)
+                jq -er '.commit.sha' "$RESPONSE_FILE" >/dev/null
+                echo "Uploaded: ${TARGET_PATH}"
+                ;;
+              *)
+                echo "::error::GitHub rejected upload for ${TARGET_PATH} (HTTP ${HTTP_STATUS})."
+                cat "$RESPONSE_FILE"
+                exit 1
+                ;;
+            esac
 
-            echo "Uploaded $TARGET_PATH"
           done < "$SOURCE_LIST"
 
-          # Delete target files that no longer exist in the source repository.
-          # This keeps the target sub-folder an actual mirror rather than an
-          # append-only copy.
+          echo "Removing stale files no longer present in source repo..."
           jq -r \
             --arg prefix "$TARGET_PREFIX" \
             --rawfile source_files "$SOURCE_LIST" '
@@ -199,12 +210,10 @@ jobs:
           while IFS=$'\t' read -r TARGET_PATH SHA; do
             [ -n "$TARGET_PATH" ] || continue
 
-            echo "Deleting: $TARGET_PATH"
+            ENCODED_PATH="$(encode_path "$TARGET_PATH")"
+            CONTENTS_URL="${TARGET_API}/contents/${ENCODED_PATH}"
 
-            ENCODED_PATH="$(
-              printf '%s' "$TARGET_PATH" | jq -sRr @uri
-            )"
-            CONTENTS_URL="$TARGET_API/contents/$ENCODED_PATH"
+            echo "Deleting: ${TARGET_PATH}"
 
             jq -n \
               --arg message "$COMMIT_MSG" \
@@ -216,21 +225,29 @@ jobs:
                 branch: $branch
               }' > "$PAYLOAD_FILE"
 
-            curl --fail-with-body --silent --show-error \
-              --request DELETE \
-              -H "Authorization: Bearer $TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              -H "Content-Type: application/json" \
-              --data-binary "@$PAYLOAD_FILE" \
-              "$CONTENTS_URL" > "$RESPONSE_FILE"
+            HTTP_STATUS="$(
+              curl --silent --show-error \
+                --output "$RESPONSE_FILE" \
+                --write-out '%{http_code}' \
+                --request DELETE \
+                -H "Authorization: Bearer $TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                -H "Content-Type: application/json" \
+                --data-binary "@$PAYLOAD_FILE" \
+                "$CONTENTS_URL"
+            )"
 
-            jq -er '.commit.sha' "$RESPONSE_FILE" >/dev/null || {
-              echo "::error::GitHub rejected deletion of $TARGET_PATH."
-              cat "$RESPONSE_FILE"
-              exit 1
-            }
-
-            echo "Deleted $TARGET_PATH"
+            case "$HTTP_STATUS" in
+              200|201)
+                jq -er '.commit.sha' "$RESPONSE_FILE" >/dev/null
+                echo "Deleted: ${TARGET_PATH}"
+                ;;
+              *)
+                echo "::error::GitHub rejected deletion for ${TARGET_PATH} (HTTP ${HTTP_STATUS})."
+                cat "$RESPONSE_FILE"
+                exit 1
+                ;;
+            esac
           done
 
           echo "Synchronization completed successfully."
