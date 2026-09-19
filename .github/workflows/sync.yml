@@ -1,49 +1,236 @@
-name: Sync to 46009361.com
+name: Sync chemistry-flashcards to 46009361.com
+
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-chemistry-flashcards
+  cancel-in-progress: false
+
 jobs:
   sync:
     runs-on: ubuntu-latest
+
+    env:
+      TOKEN: ${{ secrets.GH_TOKEN }}
+      SOURCE_REPO: 46009361/chemistry-flashcards
+      TARGET_REPO: 46009361/46009361.com
+      TARGET_PREFIX: chemistry-flashcards
+      COMMIT_MSG: ${{ github.event.head_commit.message }}
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out source repository
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
-      - name: Sync Files via GitHub Content API (Auto-Signed)
-        env:
-          TOKEN: ${{ secrets.GH_TOKEN }}
-          REPO: "46009361/46009361.com"
-          COMMIT_MSG: "${{ github.event.head_commit.message }}"
+      - name: Synchronize files through the GitHub Contents API
+        shell: bash
         run: |
-          # 1. Dynamically target the exact files present in the repository layout
-          FILES=$(find . -type f -not -path '*/.*' -not -path './.github/*' -printf '%P\n')
+          set -euo pipefail
 
-          echo "$FILES" | while read -r FILE; do
-            if [ -n "$FILE" ] && [ -f "$FILE" ]; then
-              echo "Processing asset: $FILE"
-              
-              # 2. Base64 encode the runner's local file content
-              CONTENT=$(base64 -w 0 "$FILE")
-              
-              # 3. Check if the file already exists in the target repo to fetch its SHA blob
-              # IMPORTANT: Remove the extra spaces from the URL string below when you paste this
-              SHA_RESPONSE=$(curl -s -H "Authorization: token $TOKEN" "https://api.github.com/repos/$REPO/contents/chemistry-flashcards/$FILE")
-              SHA=$(echo "$SHA_RESPONSE" | jq -r '.sha // empty')
-              
-              # 4. Construct the file payload dynamically using standard input redirection
-              # This completely prevents "Argument list too long" system crashing errors
-              if [ -n "$SHA" ] && [ "$SHA" != "null" ]; then
-                # Target path already exists: include matching remote blob SHA to overwrite
-                PAYLOAD=$(jq -n --arg msg "$COMMIT_MSG" --arg sha "$SHA" '{message: $msg, sha: $sha}' | jq --arg content "$CONTENT" '. + {content: $content}')
-              else
-                # Completely new file path: omit the blob SHA parameter
-                PAYLOAD=$(jq -n --arg msg "$COMMIT_MSG" '{message: $msg}' | jq --arg content "$CONTENT" '. + {content: $content}')
-              fi
-              
-              # 5. PUT the payload structure to the target workspace via a single-line flat execution path
-              # IMPORTANT: Remove the extra spaces from the URL string below when you paste this
-              echo "Uploading $FILE over HTTP data stream..."
-              curl -s -X PUT -H "Authorization: token $TOKEN" -H "Accept: application/vnd.github+json" -d "$PAYLOAD" "https://api.github.com/repos/$REPO/contents/chemistry-flashcards/$FILE" | jq -r '.commit.sha | "Committed successfully as SHA: \(. // "ERROR")"'
+          API_ROOT="https://api.github.com"
+          TARGET_API="$API_ROOT/repos/$TARGET_REPO"
+          SOURCE_LIST="$(mktemp)"
+          TARGET_TREE="$(mktemp)"
+          RESPONSE_FILE="$(mktemp)"
+          PAYLOAD_FILE="$(mktemp)"
+          CONTENT_FILE="$(mktemp)"
+
+          cleanup() {
+            rm -f \
+              "$SOURCE_LIST" \
+              "$TARGET_TREE" \
+              "$RESPONSE_FILE" \
+              "$PAYLOAD_FILE" \
+              "$CONTENT_FILE"
+          }
+          trap cleanup EXIT
+
+          if [ -z "${TOKEN:-}" ]; then
+            echo "::error::GH_TOKEN is not configured."
+            exit 1
+          fi
+
+          if [ -z "${COMMIT_MSG:-}" ]; then
+            COMMIT_MSG="Synchronize chemistry-flashcards"
+          fi
+
+          echo "Reading target repository metadata..."
+          TARGET_BRANCH="$(
+            curl --fail-with-body --silent --show-error \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "$TARGET_API" |
+              jq -er '.default_branch'
+          )"
+
+          echo "Target branch: $TARGET_BRANCH"
+
+          # Build a list of all source files while excluding hidden files and .github.
+          find . \
+            -type f \
+            -not -path './.git/*' \
+            -not -path './.github/*' \
+            -not -path '*/.*' \
+            -printf '%P\n' |
+            sort > "$SOURCE_LIST"
+
+          # Retrieve the target tree once so files deleted from the source can also
+          # be removed from the target repository.
+          echo "Reading target repository tree..."
+          curl --fail-with-body --silent --show-error \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$TARGET_API/git/trees/$TARGET_BRANCH?recursive=1" \
+            > "$TARGET_TREE"
+
+          if jq -e '.truncated == true' "$TARGET_TREE" >/dev/null; then
+            echo "::error::The target Git tree response was truncated."
+            exit 1
+          fi
+
+          # Generate one JSON payload per source file. The large base64 content is
+          # read by jq from a file, never passed as a process argument.
+          while IFS= read -r FILE; do
+            [ -n "$FILE" ] || continue
+            [ -f "$FILE" ] || continue
+
+            TARGET_PATH="$TARGET_PREFIX/$FILE"
+            echo "Uploading: $TARGET_PATH"
+
+            # Encode the path for use in the Contents API URL.
+            ENCODED_PATH="$(
+              printf '%s' "$TARGET_PATH" | jq -sRr @uri
+            )"
+            CONTENTS_URL="$TARGET_API/contents/$ENCODED_PATH"
+
+            # The Contents API accepts base64 content. Keep it on disk to avoid
+            # Linux execve argument-size limits for large binary assets.
+            base64 --wrap=0 "$FILE" > "$CONTENT_FILE"
+
+            SHA=""
+            HTTP_STATUS="$(
+              curl --silent --show-error \
+                -o "$RESPONSE_FILE" \
+                -w '%{http_code}' \
+                -H "Authorization: Bearer $TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                "$CONTENTS_URL"
+            )"
+
+            case "$HTTP_STATUS" in
+              200)
+                SHA="$(jq -er '.sha' "$RESPONSE_FILE")"
+                ;;
+              404)
+                SHA=""
+                ;;
+              *)
+                echo "::error::Unable to inspect $TARGET_PATH (HTTP $HTTP_STATUS)."
+                cat "$RESPONSE_FILE"
+                exit 1
+                ;;
+            esac
+
+            if [ -n "$SHA" ]; then
+              jq -n \
+                --arg message "$COMMIT_MSG" \
+                --arg sha "$SHA" \
+                --arg branch "$TARGET_BRANCH" \
+                --rawfile content "$CONTENT_FILE" \
+                '{
+                  message: $message,
+                  content: $content,
+                  sha: $sha,
+                  branch: $branch
+                }' > "$PAYLOAD_FILE"
+            else
+              jq -n \
+                --arg message "$COMMIT_MSG" \
+                --arg branch "$TARGET_BRANCH" \
+                --rawfile content "$CONTENT_FILE" \
+                '{
+                  message: $message,
+                  content: $content,
+                  branch: $branch
+                }' > "$PAYLOAD_FILE"
             fi
+
+            curl --fail-with-body --silent --show-error \
+              --request PUT \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Content-Type: application/json" \
+              --data-binary "@$PAYLOAD_FILE" \
+              "$CONTENTS_URL" > "$RESPONSE_FILE"
+
+            jq -er '.commit.sha' "$RESPONSE_FILE" >/dev/null || {
+              echo "::error::GitHub rejected the upload for $TARGET_PATH."
+              cat "$RESPONSE_FILE"
+              exit 1
+            }
+
+            echo "Uploaded $TARGET_PATH"
+          done < "$SOURCE_LIST"
+
+          # Delete target files that no longer exist in the source repository.
+          # This keeps the target sub-folder an actual mirror rather than an
+          # append-only copy.
+          jq -r \
+            --arg prefix "$TARGET_PREFIX" \
+            --rawfile source_files "$SOURCE_LIST" '
+              ($source_files
+                | split("\n")
+                | map(select(length > 0) | ($prefix + "/" + .))) as $wanted
+              | .tree[]
+              | select(.type == "blob")
+              | select(.path | startswith($prefix + "/"))
+              | .path as $target_path
+              | select(($wanted | index($target_path)) == null)
+              | [$target_path, .sha]
+              | @tsv
+            ' "$TARGET_TREE" |
+          while IFS=$'\t' read -r TARGET_PATH SHA; do
+            [ -n "$TARGET_PATH" ] || continue
+
+            echo "Deleting: $TARGET_PATH"
+
+            ENCODED_PATH="$(
+              printf '%s' "$TARGET_PATH" | jq -sRr @uri
+            )"
+            CONTENTS_URL="$TARGET_API/contents/$ENCODED_PATH"
+
+            jq -n \
+              --arg message "$COMMIT_MSG" \
+              --arg sha "$SHA" \
+              --arg branch "$TARGET_BRANCH" \
+              '{
+                message: $message,
+                sha: $sha,
+                branch: $branch
+              }' > "$PAYLOAD_FILE"
+
+            curl --fail-with-body --silent --show-error \
+              --request DELETE \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Content-Type: application/json" \
+              --data-binary "@$PAYLOAD_FILE" \
+              "$CONTENTS_URL" > "$RESPONSE_FILE"
+
+            jq -er '.commit.sha' "$RESPONSE_FILE" >/dev/null || {
+              echo "::error::GitHub rejected deletion of $TARGET_PATH."
+              cat "$RESPONSE_FILE"
+              exit 1
+            }
+
+            echo "Deleted $TARGET_PATH"
           done
+
+          echo "Synchronization completed successfully."
