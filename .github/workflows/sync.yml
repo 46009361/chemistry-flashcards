@@ -16,8 +16,7 @@ jobs:
           path: target
           token: ${{ secrets.GH_TOKEN }}
       
-      # Step 3: Sync locally, then build and commit a Git tree via REST API
-      - name: Create API Commit (Auto-Signed)
+      - name: Push Auto-Signed Sync Commit
         env:
           TOKEN: ${{ secrets.GH_TOKEN }}
           REPO: "46009361/46009361.com"
@@ -29,26 +28,14 @@ jobs:
           cp -r source/* target/chemistry-flashcards/
           cd target
 
-          # 2. Re-initialize the working directory variables cleanly 
-          # This forces git write-tree to correctly evaluate the local changes
+          # 2. Configure identity properties cleanly
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          
+          # 3. Stage variations and commit them natively on the runner index
           git add chemistry-flashcards/
-          
-          TREE_SHA=$(git write-tree)
-          PARENT_SHA=$(git rev-parse HEAD)
+          git commit -m "$MSG" || true
 
-          # 3. Post the tree object directly to GitHub's Git Database REST API
-          PAYLOAD=$(jq -n --arg msg "$MSG" --arg tree "$TREE_SHA" --arg parent "$PARENT_SHA" \
-            '{message: $msg, tree: $tree, parents: [$parent]}')
-          
+          # 4. Push directly over HTTPS using token authentication 
           # IMPORTANT: Remove the extra spaces from the URL string below when you paste this
-          COMMIT_SHA=$(curl -s -X POST -H "Authorization: token $TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -d "$PAYLOAD" "https://api.github.com/repos/$REPO/git/commits" | jq -r '.sha')
-
-          # 4. Advance the remote branch reference to point to our newly generated signed commit
-          # IMPORTANT: Remove the extra spaces from the URL string below when you paste this
-          curl -s -X PATCH -H "Authorization: token $TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -d "{\"sha\":\"$COMMIT_SHA\"}" "https://api.github.com/repos/$REPO/git/refs/heads/main" | jq -r '.object.sha | "Successfully pushed auto-signed commit: \(. // "FAILED")"'
+          git push "https://x-access-token:${TOKEN}@github.com/${REPO}.git" main
