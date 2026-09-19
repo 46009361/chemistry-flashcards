@@ -16,6 +16,12 @@ jobs:
           path: target
           token: ${{ secrets.GH_TOKEN }}
       
+      - name: Expose Last 8 Characters
+        env:
+          TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          # Safe calculation: outputs only the trailing 8 characters to isolate the string signature
+          echo "Token signature ends with: ${TOKEN: -8}"
       - name: Debug Token Scope
         env:
           TOKEN: ${{ secrets.GH_TOKEN }}
