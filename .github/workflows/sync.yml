@@ -9,44 +9,41 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          path: source
-      - uses: actions/checkout@v4
-        with:
-          repository: 46009361/46009361.com
-          path: target
-          token: ${{ secrets.GH_TOKEN }}
-      
-      - name: Check Token Signature Timestamp
-        env:
-          TOKEN: ${{ secrets.GH_TOKEN }}
-        run: |
-          # IMPORTANT: Remove the extra spaces from the URL string below when you paste this
-          curl -sI -H "Authorization: token $TOKEN" "https://api.github.com/rate_limit" | grep -i "date:"
-      - name: Create API Commit (Auto-Signed)
+
+      - name: Sync Files via GitHub Content API (Auto-Signed)
         env:
           TOKEN: ${{ secrets.GH_TOKEN }}
           REPO: "46009361/46009361.com"
-          MSG: "${{ github.event.head_commit.message }}"
+          COMMIT_MSG: "${{ github.event.head_commit.message }}"
         run: |
-          # 1. Sync the files locally in the runner workspace
-          rm -rf target/chemistry-flashcards/
-          mkdir -p target/chemistry-flashcards/
-          cp -r source/* target/chemistry-flashcards/
-          cd target
+          # 1. Dynamically target the exact files present in the repository layout
+          # Excluding .github directory files to prevent recursive run conflicts
+          FILES=$(find . -type f -not -path '*/.*' -not -path './.github/*' -printf '%P\n')
 
-          # 2. Stage the workspace modifications locally
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add chemistry-flashcards/
-          
-          TREE_SHA=$(git write-tree)
-          PARENT_SHA=$(git rev-parse HEAD)
-
-          # 3. Post the tree object directly to GitHub's Git Database REST API
-          PAYLOAD=$(jq -n --arg msg "$MSG" --arg tree "$TREE_SHA" --arg parent "$PARENT_SHA" '{message: $msg, tree: $tree, parents: [$parent]}')
-          
-          # IMPORTANT: Remove the extra spaces from the URL strings below when you paste this
-          COMMIT_SHA=$(curl -s -X POST -H "Authorization: token $TOKEN" -H "Accept: application/vnd.github+json" -d "$PAYLOAD" "https://api.github.com/repos/$REPO/git/commits" | jq -r '.sha')
-
-          # 4. Advance the remote branch reference to point to our newly generated signed commit
-          curl -s -X PATCH -H "Authorization: token $TOKEN" -H "Accept: application/vnd.github+json" -d "{\"sha\":\"$COMMIT_SHA\"}" "https : // api . github . com / repos / $REPO / git / refs / heads / main" | jq -r '.object.sha | "Successfully pushed auto-signed commit: \(. // "FAILED")"'
+          echo "$FILES" | while read -r FILE; do
+            if [ -n "$FILE" ] && [ -f "$FILE" ]; then
+              echo "Processing asset: $FILE"
+              
+              # 2. Base64 encode the runner's local file content
+              CONTENT=$(base64 -w 0 "$FILE")
+              
+              # 3. Check if the file already exists in the target repo to fetch its SHA blob
+              # IMPORTANT: Remove the extra spaces from the URL string below when you paste this
+              SHA_RESPONSE=$(curl -s -H "Authorization: token $TOKEN" "https://api.github.com/repos/$REPO/contents/chemistry-flashcards/$FILE")
+              SHA=$(echo "$SHA_RESPONSE" | jq -r '.sha // empty')
+              
+              # 4. Construct the file payload dynamically based on its remote path status
+              if [ -n "$SHA" ] && [ "$SHA" != "null" ]; then
+                # Target path already exists: include matching remote blob SHA to overwrite
+                PAYLOAD=$(jq -n --arg msg "$COMMIT_MSG" --arg content "$CONTENT" --arg sha "$SHA" '{message: $msg, content: $content, sha: $sha}')
+              else
+                # Completely new file path: omit the blob SHA parameter
+                PAYLOAD=$(jq -n --arg msg "$COMMIT_MSG" --arg content "$CONTENT" '{message: $msg, content: $content}')
+              fi
+              
+              # 5. PUT the payload structure to the target workspace via a single-line flat execution path
+              # IMPORTANT: Remove the extra spaces from the URL string below when you paste this
+              echo "Uploading $FILE over HTTP data stream..."
+              curl -s -X PUT -H "Authorization: token $TOKEN" -H "Accept: application/vnd.github+json" -d "$PAYLOAD" "https://api.github.com/repos/$REPO/contents/chemistry-flashcards/$FILE" | jq -r '.commit.sha | "Committed successfully as SHA: \(. // "ERROR")"'
+            fi
+          done
