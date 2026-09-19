@@ -9,33 +9,51 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          path: source
-      - uses: actions/checkout@v4
-        with:
-          repository: 46009361/46009361.com
-          path: target
-          token: ${{ secrets.GH_TOKEN }}
-      
-      - name: Push Auto-Signed Sync Commit
+
+      - name: Sync Files via GitHub Content API (Auto-Signed)
         env:
           TOKEN: ${{ secrets.GH_TOKEN }}
           REPO: "46009361/46009361.com"
-          MSG: "${{ github.event.head_commit.message }}"
+          COMMIT_MSG: "${{ github.event.head_commit.message }}"
         run: |
-          # 1. Sync the files locally in the runner workspace
-          rm -rf target/chemistry-flashcards/
-          mkdir -p target/chemistry-flashcards/
-          cp -r source/* target/chemistry-flashcards/
-          cd target
+          # 1. Dynamically target the exact files present in the repository layout
+          # This handles modified files and dynamically includes newly created ones
+          FILES=$(find . -type f -not -path '*/.*' -printf '%P\n')
 
-          # 2. Configure identity properties cleanly
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          
-          # 3. Stage variations and commit them natively on the runner index
-          git add chemistry-flashcards/
-          git commit -m "$MSG" || true
+          echo "$FILES" | while read -r FILE; do
+            if [ -n "$FILE" ] && [ -f "$FILE" ]; then
+              echo "Processing asset: $FILE"
+              
+              # 2. Base64 encode the runner's local file content
+              CONTENT=$(base64 -w 0 "$FILE")
+              
+              # 3. Check if the file already exists in the target repo to fetch its SHA blob
+              # IMPORTANT: Delete the spaces inside the URL string below when pasting
+              SHA_RESPONSE=$(curl -s -H "Authorization: token $TOKEN" \
+                "https://api.github.com/repos/$REPO/contents/chemistry-flashcards/$FILE")
+              
+              SHA=$(echo "$SHA_RESPONSE" | jq -r '.sha // empty')
+              
+              # 4. Construct the file payload dynamically based on its remote path status
+              if [ -n "$SHA" ] && [ "$SHA" != "null" ]; then
+                # Target path already exists: include matching remote blob SHA to overwrite
+                PAYLOAD=$(jq -n --arg msg "$COMMIT_MSG" --arg content "$CONTENT" --arg sha "$SHA" \
+                  '{message: $msg, content: $content, sha: $sha}')
+              else
+                # Completely new file path: omit the blob SHA parameter
+                PAYLOAD=$(jq -n --arg msg "$COMMIT_MSG" --arg content "$CONTENT" \
+                  '{message: $msg, content: $content}')
+              fi
+              
+              # 5. PUT the payload structure to the target workspace via the REST endpoint
+              # IMPORTANT: Delete the spaces inside the URL string below when pasting
+              echo "Uploading $FILE over HTTP data stream..."
+              curl -s -X PUT \
+                -H "Authorization: token $TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                -d "$PAYLOAD" \
+                "https://api.github.com/repos/$REPO/contents/chemistry-flashcards/$FILE" \
 
-          # 4. Push directly over HTTPS using token authentication 
-          # IMPORTANT: Remove the extra spaces from the URL string below when you paste this
-          git push "https://x-access-token:${TOKEN}@github.com/${REPO}.git" main
+                | jq -r '.commit.sha | "Committed successfully as SHA: \(. // "FAILED")"'
+            fi
+          done
