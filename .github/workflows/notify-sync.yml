@@ -1,0 +1,58 @@
+name: Request target synchronization
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  notify-target:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Trigger target repository workflow
+        shell: bash
+        env:
+          TARGET_DISPATCH_TOKEN: ${{ secrets.TARGET_DISPATCH_TOKEN }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.sha }}
+          SOURCE_REF: ${{ github.ref_name }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${TARGET_DISPATCH_TOKEN:-}" ]; then
+            echo "::error::TARGET_DISPATCH_TOKEN is not configured."
+            exit 1
+          fi
+
+          payload="$(
+            jq -n \
+              --arg repository "$SOURCE_REPOSITORY" \
+              --arg sha "$SOURCE_SHA" \
+              --arg ref "$SOURCE_REF" \
+              --arg message "$COMMIT_MESSAGE" \
+              '{
+                event_type: "chemistry-flashcards-sync",
+                client_payload: {
+                  source_repository: $repository,
+                  source_sha: $sha,
+                  source_ref: $ref,
+                  commit_message: $message
+                }
+              }'
+          )"
+
+          curl --fail-with-body --silent --show-error \
+            --request POST \
+            --url "https://api.github.com/repos/46009361/46009361.com/dispatches" \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer ${TARGET_DISPATCH_TOKEN}" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            --header "Content-Type: application/json" \
+            --data "$payload"
+
+          echo "Target synchronization requested successfully."
