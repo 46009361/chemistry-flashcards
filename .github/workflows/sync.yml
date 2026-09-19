@@ -15,11 +15,39 @@ jobs:
           repository: 46009361/46009361.com
           path: target
           token: ${{ secrets.GH_TOKEN }}
-      - run: |
+      
+      # Step 3: Sync locally, then build and commit a Git tree via REST API
+      - name: Create API Commit (Auto-Signed)
+        env:
+          TOKEN: ${{ secrets.GH_TOKEN }}
+          REPO: "46009361/46009361.com"
+          MSG: "${{ github.event.head_commit.message }}"
+        run: |
+          # 1. Sync the files locally in the runner workspace
+          rm -rf target/chemistry-flashcards/
+          mkdir -p target/chemistry-flashcards/
           cp -r source/* target/chemistry-flashcards/
           cd target
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add chemistry-flashcards
-          git commit -m "${{ github.event.head_commit.message }}" || true
-          git push
+
+          # 2. Stage the workspace and export the changes into a low-level Git index tree
+          # This automatically tracks all new, modified, and deleted files.
+          git add chemistry-flashcards/
+          TREE_SHA=$(git write-tree)
+          PARENT_SHA=$(git rev-parse HEAD)
+
+          # 3. Post the tree object directly to GitHub's Git Database REST API
+          # This instructs GitHub to bundle the changes and forge an auto-signed commit object.
+          PAYLOAD=$(jq -n --arg msg "$MSG" --arg tree "$TREE_SHA" --arg parent "$PARENT_SHA" \
+            '{message: $msg, tree: $tree, parents: [$parent]}')
+          
+          COMMIT_SHA=$(curl -s -X POST -H "Authorization: token $TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -d "$PAYLOAD" "https://api.github.com/repos/$REPO/git/commits" | jq -r '.sha')
+
+          # 4. Advance the remote branch reference to point to our newly generated signed commit
+          # IMPORTANT: Remove the extra spaces from the URL string below when you paste this
+          curl -s -X PATCH -H "Authorization: token $TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -d "{\"sha\":\"$COMMIT_SHA\"}" "https://api.github.com/repos/$REPO/git/refs/heads/main" \
+
+            | jq -r '.object.sha | "Successfully pushed auto-signed commit: \(. // "FAILED")"'
