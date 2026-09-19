@@ -16,6 +16,12 @@ jobs:
           path: target
           token: ${{ secrets.GH_TOKEN }}
       
+      - name: Debug Token Scope
+        env:
+          TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          # Query GitHub's rate limit endpoint to inspect the token's authenticated headers
+          curl -sI -H "Authorization: token $TOKEN" "https://api.github.com/rate_limit" | grep -i "x-oauth-scopes" || echo "No scopes found (might be a Fine-Grained Token or expired)"
       - name: Create API Commit (Auto-Signed)
         env:
           TOKEN: ${{ secrets.GH_TOKEN }}
